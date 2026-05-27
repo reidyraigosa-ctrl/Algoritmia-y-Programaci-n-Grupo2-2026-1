@@ -1,0 +1,578 @@
+import tkinter as tk
+from tkinter import messagebox
+import random
+import math
+
+# Importación segura de Pillow
+try:
+    from PIL import Image, ImageTk
+    HAS_PILLOW = True
+except ImportError:
+    HAS_PILLOW = False
+
+# --- CONFIGURACIÓN DE DIFICULTADES ---
+DIFICULTADES = {
+    "Fácil": {"colores": 3, "vacios": 2},
+    "Básico": {"colores": 5, "vacios": 2},
+    "Normal": {"colores": 8, "vacios": 2},
+    "Difícil": {"colores": 12, "vacios": 3},
+    "Pesadilla": {"colores": 32, "vacios": 10}
+}
+
+PALETA_NEON = [
+    "#FF00FF", "#00FFFF", "#FFD700", "#FF4500", "#7FFF00", 
+    "#1E90FF", "#FF1493", "#ADFF2F", "#FF8C00", "#00FA9A",
+    "#FF69B4", "#40E0D0", "#DA70D6", "#00FF00", "#BA55D3", "#FF3333"
+]
+
+class WaterSortFuturista:
+    
+    def __init__(self, root):
+        self.root = root
+        self.root.title("NÚCLEO DE ENERGÍA - LAB EDICIÓN CRISTAL")
+        self.root.geometry("1200x850")
+        self.root.configure(bg="#05050b") 
+
+        # --- CARGAR LA IMAGEN DE FONDO ---
+        self.fondo_img = None
+        if HAS_PILLOW:
+            try:
+                ruta_imagen = r"C:\Users\che1u\Documents\Algoritmia y Programación\Proyecto final Water Color Sort\vangoh.jpg"
+                imagen_original = Image.open(ruta_imagen)
+                imagen_redimensionada = imagen_original.resize((1200, 850))
+                self.fondo_img = ImageTk.PhotoImage(imagen_redimensionada)
+            except Exception as e:
+                print(f"Nota: No se pudo cargar la imagen de fondo local. ({e})")
+        
+        self.max_deshacer = 9999
+        self.intentos_deshacer = self.max_deshacer
+        
+        self.dificultad_actual = "Normal"
+        self.tubos_data = []
+        self.historial = [] 
+        self.seleccionado = None
+        self.capacidad = 4
+        
+        # Parámetros de diseño
+        self.ancho_b = 60
+        self.alto_b = 200 
+        self.margen_x = 120 
+        self.margen_y = 160  
+        self.gap_x = 65      
+        self.gap_y = 120     
+        self.columnas = 7
+        
+        # Controladores de Animación
+        self.offsets = []
+        self.animando_flote = False
+        self.pouring_data = None  
+        self.wave_angle = 0.0  
+
+        # --- SISTEMA DE PARTÍCULAS DINÁMICAS (FONDO) ---
+        self.particulas = []
+        for _ in range(35):  # Optimizado a 35 para mayor fluidez
+            self.particulas.append({
+                "x": random.randint(0, 1200),
+                "y": random.randint(0, 850),
+                "speed": random.uniform(0.5, 1.5),
+                "size": random.randint(2, 4),
+                "color": random.choice(["#00FFFF", "#FF00FF", "#1E90FF", "#333366"])
+            })
+
+        self.setup_ui()
+        self.iniciar_nivel()
+        self.update_waves() 
+
+    def setup_ui(self):
+        self.header = tk.Frame(self.root, bg="#0d0d18", pady=10)
+        self.header.pack(fill="x", side="top")
+
+        self.var_dificultad = tk.StringVar(self.root)
+        self.var_dificultad.set(self.dificultad_actual)
+        
+        menu_dif = tk.OptionMenu(self.header, self.var_dificultad, *DIFICULTADES.keys(), command=self.cambiar_dificultad)
+        menu_dif.config(bg="#00FFFF", fg="black", font=("Courier", 10, "bold"), width=12)
+        menu_dif.pack(side="left", padx=10)
+
+        btn_reset = tk.Button(self.header, text="REINICIAR", command=self.iniciar_nivel, bg="#FF00FF", fg="white", font=("Courier", 10, "bold"), width=12)
+        btn_reset.pack(side="right", padx=10)
+
+        self.btn_undo = tk.Button(self.header, text=f"DESHACER ({self.intentos_deshacer})", command=self.deshacer_movimiento, bg="#FFD700", fg="black", font=("Courier", 10, "bold"), width=15)
+        self.btn_undo.pack(side="right", padx=10)
+
+        container = tk.Frame(self.root, bg="#05050b")
+        container.pack(fill="both", expand=True)
+
+        self.canvas = tk.Canvas(container, bg="#05050b", highlightthickness=0)
+        scrollbar_y = tk.Scrollbar(container, orient="vertical", command=self.canvas.yview)
+        self.canvas.configure(yscrollcommand=scrollbar_y.set)
+        
+        scrollbar_y.pack(side="right", fill="y")
+        self.canvas.pack(side="left", fill="both", expand=True)
+        self.canvas.bind("<MouseWheel>", self._on_mousewheel)
+
+    def _on_mousewheel(self, event):
+        if hasattr(event, 'delta') and event.delta:
+            self.canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+
+    def cambiar_dificultad(self, seleccion):
+        self.dificultad_actual = seleccion
+        self.iniciar_nivel()
+
+    def iniciar_nivel(self):
+        conf = DIFICULTADES[self.dificultad_actual]
+        cantidad_colores = conf["colores"]
+        cantidad_vacios = conf["vacios"]
+        
+        colores_usar = PALETA_NEON[:cantidad_colores]
+        pool = colores_usar * self.capacidad
+        random.shuffle(pool)
+        
+        self.tubos_data = [pool[i:i + self.capacidad] for i in range(0, len(pool), self.capacidad)]
+        
+        for _ in range(cantidad_vacios):
+            self.tubos_data.append([])
+
+        self.historial = []
+        self.intentos_deshacer = self.max_deshacer
+        self.seleccionado = None
+        self.pouring_data = None
+        
+        self.columnas = 8 if len(self.tubos_data) > 15 else 7
+        self.offsets = [0.0] * len(self.tubos_data)
+        
+        self.actualizar_boton_undo()
+        self.dibujar_fondo_estatico()
+        self.actualizar_scrollregion_estatico()
+        self.dibujar_escena()
+
+    def actualizar_scrollregion_estatico(self):
+        # Optimización radical: Calcular el tamaño estáticamente aquí y no en el bucle principal
+        filas = (len(self.tubos_data) + self.columnas - 1) // self.columnas
+        max_x = self.margen_x + self.columnas * (self.ancho_b + self.gap_x) + 50
+        max_y = self.margen_y + filas * (self.alto_b + self.gap_y) + 100
+        self.canvas.config(scrollregion=(0, 0, max(max_x, 1200), max(max_y, 850)))
+
+    def registrar_estado(self):
+        estado_copia = [list(tubo) for tubo in self.tubos_data]
+        self.historial.append(estado_copia)
+        if len(self.historial) > 50: 
+            self.historial.pop(0)
+
+    def deshacer_movimiento(self):
+        if self.pouring_data is not None:
+            return
+        if len(self.historial) > 0 and self.intentos_deshacer > 0:
+            self.tubos_data = self.historial.pop()
+            self.intentos_deshacer -= 1
+            self.seleccionado = None
+            self.actualizar_boton_undo()
+            self.iniciar_animacion_flote() 
+        elif self.intentos_deshacer <= 0:
+            messagebox.showwarning("ERROR DE SISTEMA", "No quedan cargas de retroceso temporal.")
+        else:
+            messagebox.showwarning("ERROR", "No puedes deshacer más.")
+
+    def actualizar_boton_undo(self):
+        self.btn_undo.config(text=f"DESHACER ({self.intentos_deshacer})")
+        if self.intentos_deshacer <= 0:
+            self.btn_undo.config(state="disabled", bg="#333333", fg="#777777")
+        else:
+            self.btn_undo.config(state="normal", bg="#FFD700", fg="black")
+
+    def obtener_centro_boca(self, i):
+        fila = i // self.columnas
+        columna = i % self.columnas
+        cx = self.margen_x + columna * (self.ancho_b + self.gap_x) + self.ancho_b / 2
+        cy = self.margen_y + fila * (self.alto_b + self.gap_y)
+        return cx, cy
+
+    def dibujar_fondo_estatico(self):
+        self.canvas.delete("fondo")
+        if self.fondo_img is not None:
+            self.canvas.create_image(0, 0, image=self.fondo_img, anchor="nw", tags="fondo")
+
+        for i in range(0, 1500, 60): 
+            self.canvas.create_line(i, 0, i, 1200, fill="#0f0f1a", tags=("fondo", "grid"))
+        for i in range(0, 1200, 60):
+            self.canvas.create_line(0, i, 1500, i, fill="#0f0f1a", tags=("fondo", "grid"))
+
+        for p in self.particulas:
+            p_id = self.canvas.create_oval(
+                p["x"], p["y"], p["x"] + p["size"], p["y"] + p["size"],
+                fill=p["color"], outline="", tags="fondo"
+            )
+            p["id"] = p_id
+
+    def update_waves(self):
+        self.wave_angle += 0.15
+        
+        for p in self.particulas:
+            p["y"] -= p["speed"]
+            if p["y"] < -10:
+                p["y"] = 860
+                p["x"] = random.randint(0, 1200)
+            if "id" in p:
+                self.canvas.coords(p["id"], p["x"], p["y"], p["x"] + p["size"], p["y"] + p["size"])
+                
+        v_pulsante = int(14 + 8 * math.sin(self.wave_angle))
+        color_grid = f"#{v_pulsante:02x}{v_pulsante:02x}{(v_pulsante+10):02x}"
+        self.canvas.itemconfig("grid", fill=color_grid)
+        
+        self.dibujar_escena()
+        self.root.after(25, self.update_waves) # 25ms estable (40 FPS estables sin saturar CPU)
+
+    def iniciar_animacion_flote(self):
+        if not self.animando_flote:
+            self.animando_flote = True
+            self.ejecutar_animacion_flote()
+
+    def ejecutar_animacion_flote(self):
+        hubo_cambios = False
+        velocidad = 6 
+
+        for i in range(len(self.tubos_data)):
+            target = -30 if self.seleccionado == i else 0
+            actual = self.offsets[i]
+
+            if actual != target:
+                hubo_cambios = True
+                if actual > target:
+                    self.offsets[i] = max(actual - velocidad, target)
+                else:
+                    self.offsets[i] = min(actual + velocidad, target)
+
+        if hubo_cambios:
+            self.root.after(15, self.ejecutar_animacion_flote)
+        else:
+            self.animando_flote = False
+
+    def ejecutar_pouring_avanzado(self):
+        if self.pouring_data is None:
+            return
+            
+        pd = self.pouring_data
+        velocidad_fase = 0.07  
+        velocidad_liquido = 0.05 
+
+        if pd["fase"] == "inclinando":
+            pd["t"] += velocidad_fase
+            if pd["t"] >= 1.0:
+                pd["t"] = 1.0
+                pd["cx_actual"] = pd["cx_target"]
+                pd["cy_actual"] = pd["cy_target"]
+                pd["angulo_actual"] = pd["angulo_target"]
+                pd["fase"] = "vaciando"
+                pd["progreso_bloque"] = 0.0
+            else:
+                ease = pd["t"] * pd["t"] * (3 - 2 * pd["t"])
+                pd["cx_actual"] = pd["cx_ini"] + (pd["cx_target"] - pd["cx_ini"]) * ease
+                pd["cy_actual"] = pd["cy_ini"] + (pd["cy_target"] - pd["cy_ini"]) * ease
+                pd["angulo_actual"] = pd["angulo_target"] * ease
+                
+            self.root.after(15, self.ejecutar_pouring_avanzado)
+            
+        elif pd["fase"] == "vaciando":
+            pd["progreso_bloque"] += velocidad_liquido
+            
+            if pd["progreso_bloque"] >= 1.0:
+                if len(self.tubos_data[pd["origen"]]) > 0:
+                    self.tubos_data[pd["origen"]].pop()
+                self.tubos_data[pd["destino"]].append(pd["color"])
+                pd["bloques_actuales"] += 1
+                pd["progreso_bloque"] = 0.0
+                
+                if pd["bloques_actuales"] >= pd["bloques_totales"]:
+                    pd["fase"] = "enderezando"
+                    pd["t"] = 0.0
+            
+            self.root.after(15, self.ejecutar_pouring_avanzado)
+            
+        elif pd["fase"] == "enderezando":
+            pd["t"] += velocidad_fase
+            if pd["t"] >= 1.0:
+                self.pouring_data = None
+                self.check_win()
+            else:
+                ease = pd["t"] * pd["t"] * (3 - 2 * pd["t"])
+                pd["cx_actual"] = pd["cx_target"] + (pd["cx_ini"] - pd["cx_target"]) * ease
+                pd["cy_actual"] = pd["cy_target"] + (pd["cy_ini"] - pd["cy_target"]) * ease
+                pd["angulo_actual"] = pd["angulo_target"] * (1.0 - ease)
+                self.root.after(15, self.ejecutar_pouring_avanzado)
+
+    def dibujar_tubo_rotado(self, cx, cy, ancho, alto, contenido, angulo_deg, prog_vaciado=0.0, es_origen=False, prog_llenado=0.0, es_destino=False, color_flujo=None):
+        rad = math.radians(angulo_deg)
+        w = ancho
+        h = alto
+        r = w / 2
+        alto_liq = h / self.capacidad
+        color_borde = "#FF00FF" if (angulo_deg != 0 or prog_llenado > 0) else "#00FFFF"
+        ancho_borde = 4 if (angulo_deg != 0 or prog_llenado > 0) else 2
+
+        def rotar_p(rx, ry):
+            cos_a = math.cos(rad)
+            sin_a = math.sin(rad)
+            return (cx + rx * cos_a - ry * sin_a, cy + rx * sin_a + ry * cos_a)
+
+        amp_ola = 5.0 if (es_destino and prog_llenado > 0) else (3.0 if es_origen else 1.0)
+
+        # 1. AGUA INTERNA
+        num_bloques = len(contenido)
+        for i in range(num_bloques):
+            color = contenido[i]
+            es_capa_vaciandose = (i == num_bloques - 1 and es_origen)
+            scale = (1.0 - prog_vaciado) if es_capa_vaciandose else 1.0
+            
+            y_b_actual = h - (i * alto_liq)
+            y_t_actual = y_b_actual - (alto_liq * scale)
+
+            poly_pts = []
+            num_pasos_ola = 10  # Reducido de 14 a 10 para quitar carga matemática innecesaria
+            for step in range(num_pasos_ola + 1):
+                f_step = step / num_pasos_ola
+                rx_ola = -w/2 + f_step * w
+                olita = math.sin(f_step * math.pi * 1.8 + self.wave_angle + (cx * 0.05)) * amp_ola
+                poly_pts.extend(rotar_p(rx_ola, y_t_actual + olita))
+
+            if i == 0:
+                y_curva = h - r
+                steps_c = 8
+                for s in range(steps_c + 1):
+                    alpha = (s / steps_c) * math.pi
+                    rx = r * math.cos(alpha)
+                    ry = y_curva + r * math.sin(alpha)
+                    poly_pts.extend(rotar_p(rx, ry))
+            else:
+                poly_pts.extend(rotar_p(w/2, y_b_actual))
+                poly_pts.extend(rotar_p(-w/2, y_b_actual))
+                
+            self.canvas.create_polygon(poly_pts, fill=color, outline=color, tags="dinamico")
+
+        # 1b. CONEXIÓN DIRECTA DE AGUA (RAMPA DE FLUJO INTERNO TOTALMENTE SELLADA)
+        if es_origen and num_bloques > 0:
+            top_color = contenido[-1]
+            scale = (1.0 - prog_vaciado)
+            y_b_top = h - ((num_bloques - 1) * alto_liq)
+            y_t_top = y_b_top - (alto_liq * scale)
+            
+            lip_rx = (w / 2 - 3) if angulo_deg > 0 else (-w / 2 + 3)
+            rampa_pts = []
+            rampa_pts.extend(rotar_p(-w/2, y_t_top))
+            rampa_pts.extend(rotar_p(w/2, y_t_top))
+            rampa_pts.extend(rotar_p(lip_rx, 0))
+            rampa_pts.extend(rotar_p(lip_rx - (16 if angulo_deg > 0 else -16), 0))
+            
+            self.canvas.create_polygon(rampa_pts, fill=top_color, outline=top_color, tags="dinamico")
+
+        # 1c. AGUA CRECIENTE EN EL DESTINO
+        if es_destino and prog_llenado > 0 and color_flujo:
+            idx = len(contenido)
+            y_b_actual = h - (idx * alto_liq)
+            y_t_actual = y_b_actual - (alto_liq * prog_llenado)
+            
+            poly_pts = []
+            num_pasos_ola = 10
+            for step in range(num_pasos_ola + 1):
+                f_step = step / num_pasos_ola
+                rx_ola = -w/2 + f_step * w
+                olita = math.sin(f_step * math.pi * 2.0 + self.wave_angle * 1.5) * amp_ola
+                poly_pts.extend(rotar_p(rx_ola, y_t_actual + olita))
+
+            if idx == 0:
+                y_curva = h - r
+                steps_c = 8
+                for s in range(steps_c + 1):
+                    alpha = (s / steps_c) * math.pi
+                    rx = r * math.cos(alpha)
+                    ry = y_curva + r * math.sin(alpha)
+                    poly_pts.extend(rotar_p(rx, ry))
+            else:
+                poly_pts.extend(rotar_p(w/2, y_b_actual))
+                poly_pts.extend(rotar_p(-w/2, y_b_actual))
+                
+            self.canvas.create_polygon(poly_pts, fill=color_flujo, outline=color_flujo, tags="dinamico")
+
+        # 2. BOTELLA DE CRISTAL
+        self.canvas.create_line(*rotar_p(-w/2, 0), *rotar_p(-w/2, h - r), fill="#141424", width=7, tags="dinamico")
+        self.canvas.create_line(*rotar_p(w/2, 0), *rotar_p(w/2, h - r), fill="#141424", width=7, tags="dinamico")
+        
+        self.canvas.create_line(*rotar_p(-w/2, 0), *rotar_p(-w/2, h - r), fill=color_borde, width=ancho_borde, tags="dinamico")
+        self.canvas.create_line(*rotar_p(w/2, 0), *rotar_p(w/2, h - r), fill=color_borde, width=ancho_borde, tags="dinamico")
+        
+        self.canvas.create_line(*rotar_p(-w/2 - 6, 0), *rotar_p(w/2 + 6, 0), fill=color_borde, width=ancho_borde + 2, tags="dinamico")
+        self.canvas.create_line(*rotar_p(-w/2 - 4, -2), *rotar_p(w/2 + 4, -2), fill="#FFFFFF", width=1.5, tags="dinamico")
+
+        curve_pts = []
+        steps = 12
+        for s in range(steps + 1):
+            alpha = (s / steps) * math.pi
+            rx = r * math.cos(alpha)
+            ry = (h - r) + r * math.sin(alpha)
+            curve_pts.extend(rotar_p(rx, ry))
+        self.canvas.create_line(curve_pts, fill=color_borde, width=ancho_borde, tags="dinamico")
+
+        # DESTELLOS CRISTALINOS
+        self.canvas.create_line(*rotar_p(-w/2 + 5, 8), *rotar_p(-w/2 + 5, h - r), fill="#FFFFFF", width=2, capstyle="round", tags="dinamico")
+        self.canvas.create_line(*rotar_p(w/2 - 6, 14), *rotar_p(w/2 - 6, h - r - 25), fill="#FFFFFF", width=1, capstyle="round", tags="dinamico")
+
+    # --- CONTROL DE CAPAS ABSOLUTO (MULTIPASE SIN TRABAS) ---
+    def dibujar_escena(self):
+        self.canvas.delete("dinamico") 
+
+        # FASE 1: Dibujar primero todas las botellas quietas/inactivas (Capa de fondo)
+        for i in range(len(self.tubos_data)):
+            if self.pouring_data is not None and (self.pouring_data["origen"] == i or self.pouring_data["destino"] == i):
+                continue
+            if self.seleccionado == i:
+                continue
+                
+            contenido = self.tubos_data[i]
+            cx, cy = self.obtener_centro_boca(i)
+            cy += self.offsets[i]  
+            self.dibujar_tubo_rotado(cx, cy, self.ancho_b, self.alto_b, contenido, 0.0)
+            self.vincular_clic_area(i, cx, cy)
+
+        # FASE 2: Dibujar la botella seleccionada flotando (Capa media)
+        if self.seleccionado is not None and (self.pouring_data is None or (self.pouring_data["origen"] != self.seleccionado and self.pouring_data["destino"] != self.seleccionado)):
+            i = self.seleccionado
+            cx, cy = self.obtener_centro_boca(i)
+            cy += self.offsets[i]
+            self.dibujar_tubo_rotado(cx, cy, self.ancho_b, self.alto_b, self.tubos_data[i], 0.0)
+            self.vincular_clic_area(i, cx, cy)
+
+        # FASE 3: Dibujar las botellas activas y el chorro (CAPA SUPERIOR - EN FRENTE DE TODO)
+        if self.pouring_data is not None:
+            pd = self.pouring_data
+            origen = pd["origen"]
+            destino = pd["destino"]
+            
+            # 3a. Dibujar destino (Por detrás del origen pero delante de las quietas)
+            cx_d, cy_d = self.obtener_centro_boca(destino)
+            self.dibujar_tubo_rotado(
+                cx_d, cy_d, self.ancho_b, self.alto_b, 
+                self.tubos_data[destino], 0.0, prog_llenado=pd["progreso_bloque"], es_destino=True, color_flujo=pd["color"]
+            )
+            self.vincular_clic_area(destino, cx_d, cy_d)
+
+            # 3b. RENDERIZAR EL CHORRO DE AGUA FLUIDO
+            if pd["fase"] == "vaciando":
+                rad = math.radians(pd["angulo_actual"])
+                lip_offset = (self.ancho_b / 2 - 4) if pd["angulo_target"] > 0 else (-self.ancho_b / 2 + 4)
+                
+                x_chorro_inicio = pd["cx_actual"] + lip_offset * math.cos(rad)
+                y_chorro_inicio = pd["cy_actual"] + lip_offset * math.sin(rad)
+                
+                idx_dest = len(self.tubos_data[destino])
+                alto_liq = self.alto_b / self.capacidad
+                y_superficie_agua = cy_d + self.alto_b - ((idx_dest + pd["progreso_bloque"]) * alto_liq)
+
+                puntos_chorro = []
+                segmentos_chorro = 10  # Bajado a 10 para acelerar la CPU
+                for s in range(segmentos_chorro + 1):
+                    f_seg = s / segmentos_chorro
+                    x_seg = x_chorro_inicio + (cx_d - x_chorro_inicio) * f_seg
+                    y_seg = y_chorro_inicio + (y_superficie_agua - y_chorro_inicio) * f_seg
+                    
+                    if 0 < s < segmentos_chorro:
+                        perturbacion = math.sin(f_seg * math.pi * 3.0 - self.wave_angle * 1.5) * 2.5
+                        x_seg += perturbacion
+                        
+                    puntos_chorro.append(x_seg)
+                    puntos_chorro.append(y_seg)
+
+                self.canvas.create_line(puntos_chorro, fill=pd["color"], width=7, smooth=True, capstyle="round", tags="dinamico")
+                self.canvas.create_line(puntos_chorro, fill="#FFFFFF", width=2.5, smooth=True, capstyle="round", tags="dinamico")
+
+            # 3c. Dibujar origen (AL FINAL DE TODO - FRENTE ABSOLUTO)
+            self.dibujar_tubo_rotado(
+                pd["cx_actual"], pd["cy_actual"], self.ancho_b, self.alto_b, 
+                self.tubos_data[origen], pd["angulo_actual"], prog_vaciado=pd["progreso_bloque"], es_origen=True
+            )
+            self.vincular_clic_area(origen, pd["cx_actual"], pd["cy_actual"])
+
+    def vincular_clic_area(self, idx, cx, cy):
+        tag_tubo = f"t_{idx}"
+        self.canvas.create_rectangle(
+            cx - self.ancho_b/2, cy, cx + self.ancho_b/2, cy + self.alto_b, 
+            fill="", outline="", tags=(tag_tubo, "dinamico")
+        )
+        self.canvas.tag_bind(tag_tubo, "<Button-1>", lambda event, numero=idx: self.clic_tubo(numero))
+
+    def clic_tubo(self, indice_clic):
+        if self.pouring_data is not None:
+            return 
+            
+        if self.seleccionado is None:
+            if len(self.tubos_data[indice_clic]) > 0:
+                self.seleccionado = indice_clic
+                self.iniciar_animacion_flote()
+        else:
+            if self.seleccionado != indice_clic:
+                if self.puede_transferir(self.seleccionado, indice_clic):
+                    origen = self.seleccionado
+                    destino = indice_clic
+                    color = self.tubos_data[origen][-1]
+                    
+                    cant_origen = 0
+                    for c in reversed(self.tubos_data[origen]):
+                        if c == color: cant_origen += 1
+                        else: break
+                    
+                    espacio_destino = self.capacidad - len(self.tubos_data[destino])
+                    bloques_a_mover = min(cant_origen, espacio_destino)
+                    
+                    if bloques_a_mover > 0:
+                        self.registrar_estado()
+                        
+                        cx_o, cy_o = self.obtener_centro_boca(origen)
+                        cx_d, cy_d = self.obtener_centro_boca(destino)
+                        
+                        if cx_d > cx_o:
+                            angulo_target = 65.0
+                            cx_target = cx_d - 20 - (self.ancho_b / 2) * math.cos(math.radians(65))
+                            cy_target = cy_d - 45 - (self.ancho_b / 2) * math.sin(math.radians(65))
+                        else:
+                            angulo_target = -65.0
+                            cx_target = cx_d + 20 + (self.ancho_b / 2) * math.cos(math.radians(65))
+                            cy_target = cy_d - 45 + (self.ancho_b / 2) * math.sin(math.radians(65))
+
+                        self.pouring_data = {
+                            "origen": origen, "destino": destino, "color": color,
+                            "bloques_totales": bloques_a_mover, "bloques_actuales": 0,
+                            "fase": "inclinando", "t": 0.0,
+                            "cx_ini": cx_o, "cy_ini": cy_o + self.offsets[origen],
+                            "cx_target": cx_target, "cy_target": cy_target,
+                            "angulo_target": angulo_target, "angulo_actual": 0.0,
+                            "cx_actual": cx_o, "cy_actual": cy_o + self.offsets[origen],
+                            "progreso_bloque": 0.0
+                        }
+                        self.seleccionado = None
+                        self.iniciar_animacion_flote()
+                        self.ejecutar_pouring_avanzado()
+                        return
+                        
+            self.seleccionado = None
+            self.iniciar_animacion_flote()
+
+    def puede_transferir(self, origen, destino):
+        tubo_origen = self.tubos_data[origen]
+        tubo_destino = self.tubos_data[destino]
+        if len(tubo_origen) == 0 or len(tubo_destino) >= self.capacidad: return False
+        if len(tubo_destino) == 0: return True
+        return tubo_destino[-1] == tubo_origen[-1]
+
+    def check_win(self):
+        for tubo in self.tubos_data:
+            if len(tubo) > 0: 
+                if len(tubo) != self.capacidad: return 
+                primer_color = tubo[0]
+                for color in tubo:
+                    if color != primer_color: return 
+                        
+        messagebox.showinfo("MISIÓN CUMPLIDA", "¡Has estabilizado todos los núcleos de energía!")
+        self.iniciar_nivel()
+
+if __name__ == "__main__":
+    root = tk.Tk()
+    app = WaterSortFuturista(root)
+    root.mainloop()
